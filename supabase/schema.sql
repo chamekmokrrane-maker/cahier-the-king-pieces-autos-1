@@ -1,5 +1,5 @@
 -- =========================================================
--- CAHIER THE KING PIECES AUTOS - BASE SUPABASE V5
+-- CAHIER THE KING PIECES AUTOS - BASE SUPABASE V10
 -- À coller dans Supabase > SQL Editor > New query > Run
 -- Cette version ajoute aussi la partie FACTURES CLIENTS.
 -- =========================================================
@@ -229,6 +229,118 @@ create index if not exists idx_devis_numero on public.devis(numero);
 create index if not exists idx_factures_updated_at on public.factures(updated_at desc);
 create index if not exists idx_factures_numero on public.factures(numero);
 create index if not exists idx_factures_date on public.factures(date_facture desc);
+
+
+
+-- =========================================================
+-- V10 - Gestion des comptes admin depuis le site
+-- Permet de modifier nom / identifiant / mot de passe et de supprimer un admin.
+-- Le dernier compte admin et le compte connecté ne doivent pas être supprimés.
+-- =========================================================
+
+create or replace function public.clean_admin_username(value text)
+returns text
+language sql
+immutable
+as $$
+  select lower(regexp_replace(coalesce(value, ''), '[^a-z0-9._-]', '', 'g'));
+$$;
+
+create or replace function public.update_admin_account(
+  target_id uuid,
+  new_username text,
+  new_display_name text,
+  new_password text default null
+)
+returns public.profiles
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  cleaned_username text;
+  cleaned_display text;
+  new_email text;
+  updated_profile public.profiles;
+begin
+  if not public.is_admin() then
+    raise exception 'Accès refusé';
+  end if;
+
+  cleaned_username := public.clean_admin_username(new_username);
+  if cleaned_username = '' then
+    raise exception 'Identifiant obligatoire';
+  end if;
+
+  cleaned_display := nullif(trim(coalesce(new_display_name, '')), '');
+  if cleaned_display is null then
+    cleaned_display := cleaned_username;
+  end if;
+
+  new_email := cleaned_username || '@thekingpiecesautos.fr';
+
+  update public.profiles
+  set username = cleaned_username,
+      display_name = cleaned_display,
+      role = 'admin'
+  where id = target_id
+  returning * into updated_profile;
+
+  if updated_profile.id is null then
+    raise exception 'Compte introuvable';
+  end if;
+
+  update auth.users
+  set email = new_email,
+      raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb)
+        || jsonb_build_object('username', cleaned_username, 'display_name', cleaned_display, 'role', 'admin'),
+      updated_at = now()
+  where id = target_id;
+
+  if new_password is not null and trim(new_password) <> '' then
+    if length(new_password) < 6 then
+      raise exception 'Le mot de passe doit contenir au moins 6 caractères';
+    end if;
+
+    update auth.users
+    set encrypted_password = crypt(new_password, gen_salt('bf')),
+        updated_at = now()
+    where id = target_id;
+  end if;
+
+  return updated_profile;
+end;
+$$;
+
+grant execute on function public.update_admin_account(uuid, text, text, text) to authenticated;
+
+create or replace function public.delete_admin_account(target_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  admin_count integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Accès refusé';
+  end if;
+
+  if target_id = auth.uid() then
+    raise exception 'Impossible de supprimer le compte actuellement connecté';
+  end if;
+
+  select count(*) into admin_count from public.profiles where role = 'admin';
+  if admin_count <= 1 then
+    raise exception 'Impossible de supprimer le dernier compte admin';
+  end if;
+
+  delete from auth.users where id = target_id;
+end;
+$$;
+
+grant execute on function public.delete_admin_account(uuid) to authenticated;
 
 -- =========================================================
 -- IMPORTANT SUPABASE AUTH

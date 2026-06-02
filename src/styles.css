@@ -277,3 +277,16 @@ body { background: #eef2f7; }
 .status.sent { background: #eef2ff; color: #0d2e75; }
 .home-pro { background: linear-gradient(90deg, rgba(5,5,5,.90), rgba(7,27,73,.82)), url('./assets/dashboard-hero.jpeg') center/cover; border: 1px solid rgba(213,162,29,.45); }
 .home-copy h1 { text-shadow: 0 12px 28px rgba(0,0,0,.32); }
+
+/* V10 - gestion des comptes admin */
+.accounts-table table { min-width: 980px; }
+.table-input, .password-small { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-weight: 800; background: #fff; color: var(--black-2); }
+.password-small { min-width: 220px; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.account-actions button { border: 0; border-radius: 11px; padding: 9px 11px; display: inline-flex; align-items: center; gap: 7px; font-weight: 950; cursor: pointer; }
+.account-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.account-actions .edit { background: #e8f0ff; color: var(--blue); }
+.account-actions .delete { background: #fee2e2; color: var(--danger); }
+.account-actions.edit-mode { min-width: 420px; }
+.current-badge { display: inline-flex; margin-left: 8px; padding: 5px 8px; border-radius: 999px; background: #fff4d6; color: #854d0e; font-size: 12px; font-weight: 950; }
+.muted-help { color: var(--muted); font-size: 13px; font-weight: 800; margin: 14px 0 0; }

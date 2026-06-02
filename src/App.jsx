@@ -586,7 +586,7 @@ export default function App() {
         {page === 'factures' && <FacturesList factures={factures} onNew={() => { setSelectedFacture(createEmptyFacture()); setPage('facture-edit'); }} onEdit={(f) => { setSelectedFacture(f); setPage('facture-edit'); }} onDelete={deleteFacture} onPrint={printFacture} />}
         {page === 'facture-edit' && <FactureEditor initial={selectedFacture || createEmptyFacture()} onSave={saveFacture} onBack={() => setPage('factures')} onDelete={deleteFacture} />}
 
-        {page === 'comptes' && <AccountsPage profiles={profiles} offlineMode={offlineMode} onReload={loadAll} onMessage={setMessage} />}
+        {page === 'comptes' && <AccountsPage profiles={profiles} offlineMode={offlineMode} currentUserId={session?.user?.id} onReload={loadAll} onMessage={setMessage} />}
       </main>
     </div>
   );
@@ -866,25 +866,134 @@ function FactureEditor({ initial, onSave, onBack, onDelete }) {
   );
 }
 
-function AccountsPage({ profiles, offlineMode, onReload, onMessage }) {
+function AccountsPage({ profiles, offlineMode, currentUserId, onReload, onMessage }) {
   const [form, setForm] = useState({ display_name: '', username: '', password: '' });
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ display_name: '', username: '', password: '' });
   const [loading, setLoading] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+
   async function createAccount(e) {
     e.preventDefault();
     if (offlineMode) { onMessage('Les comptes admin nécessitent Supabase. Configure .env puis relance le site.'); return; }
     setLoading(true);
     try {
       const client = createNoPersistSupabaseClient();
-      const { error } = await client.auth.signUp({ email: usernameToEmail(form.username), password: form.password, options: { data: { username: cleanUsername(form.username), display_name: form.display_name, role: 'admin' } } });
+      const { error } = await client.auth.signUp({
+        email: usernameToEmail(form.username),
+        password: form.password,
+        options: { data: { username: cleanUsername(form.username), display_name: form.display_name, role: 'admin' } },
+      });
       if (error) throw error;
       setForm({ display_name: '', username: '', password: '' });
       onMessage('Compte admin créé.');
-      onReload();
+      await onReload();
     } catch (error) { onMessage(`Erreur création compte : ${error.message}`); }
     finally { setLoading(false); }
   }
+
+  function startEdit(profile) {
+    setEditingId(profile.id);
+    setEditForm({ display_name: profile.display_name || '', username: profile.username || '', password: '' });
+  }
+
+  async function saveAccount(profileId) {
+    if (offlineMode) { onMessage('La modification des comptes nécessite Supabase.'); return; }
+    setEditLoading(true);
+    try {
+      const payload = {
+        target_id: profileId,
+        new_username: editForm.username,
+        new_display_name: editForm.display_name,
+        new_password: editForm.password || null,
+      };
+      const { error } = await supabase.rpc('update_admin_account', payload);
+      if (error) throw error;
+      setEditingId(null);
+      setEditForm({ display_name: '', username: '', password: '' });
+      onMessage('Compte admin modifié.');
+      await onReload();
+    } catch (error) {
+      onMessage(`Erreur modification compte : ${error.message}. Si tu viens d’installer cette version, colle le nouveau SQL V10 dans Supabase.`);
+    } finally { setEditLoading(false); }
+  }
+
+  async function deleteAccount(profileItem) {
+    if (offlineMode) { onMessage('La suppression des comptes nécessite Supabase.'); return; }
+    if (profileItem.id === currentUserId) { onMessage('Tu ne peux pas supprimer le compte actuellement connecté.'); return; }
+    if (profiles.length <= 1) { onMessage('Impossible de supprimer le dernier compte admin.'); return; }
+    if (!window.confirm(`Supprimer le compte admin ${profileItem.display_name || profileItem.username} ?`)) return;
+    setEditLoading(true);
+    try {
+      const { error } = await supabase.rpc('delete_admin_account', { target_id: profileItem.id });
+      if (error) throw error;
+      onMessage('Compte admin supprimé.');
+      await onReload();
+    } catch (error) {
+      onMessage(`Erreur suppression compte : ${error.message}. Si tu viens d’installer cette version, colle le nouveau SQL V10 dans Supabase.`);
+    } finally { setEditLoading(false); }
+  }
+
   return (
-    <div className="page-stack"><div className="section-title"><div><p className="eyebrow dark">Administration</p><h1>Comptes admin</h1><p>Crée des comptes avec ton propre nom, identifiant et mot de passe.</p></div></div><section className="card form-card"><h2>Créer un compte admin</h2><form className="form-grid four" onSubmit={createAccount}><label>Nom affiché<input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required placeholder="Ex : Mokrane" /></label><label>Identifiant<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required placeholder="Ex : mokrane" /></label><label>Mot de passe<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={6} /></label><button className="primary-button submit-align" disabled={loading}>{loading ? 'Création...' : 'Créer'}</button></form></section><section className="card"><h2>Admins existants</h2>{profiles.length === 0 ? <Empty text="Aucun compte affiché." /> : <div className="table-card"><table><thead><tr><th>Nom</th><th>Identifiant</th><th>Rôle</th><th>Date</th></tr></thead><tbody>{profiles.map((p) => <tr key={p.id}><td>{p.display_name}</td><td>{p.username}</td><td>{p.role}</td><td>{formatDate(p.created_at)}</td></tr>)}</tbody></table></div>}</section></div>
+    <div className="page-stack">
+      <div className="section-title">
+        <div>
+          <p className="eyebrow dark">Administration</p>
+          <h1>Comptes admin</h1>
+          <p>Crée, modifie ou supprime les comptes administrateur du logiciel.</p>
+        </div>
+      </div>
+
+      <section className="card form-card">
+        <h2>Créer un compte admin</h2>
+        <form className="form-grid four" onSubmit={createAccount}>
+          <label>Nom affiché<input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required placeholder="Ex : Mokrane" /></label>
+          <label>Identifiant<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required placeholder="Ex : mokrane" /></label>
+          <label>Mot de passe<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={6} /></label>
+          <button className="primary-button submit-align" disabled={loading}>{loading ? 'Création...' : 'Créer'}</button>
+        </form>
+      </section>
+
+      <section className="card">
+        <h2>Admins existants</h2>
+        {profiles.length === 0 ? <Empty text="Aucun compte affiché." /> : (
+          <div className="table-card accounts-table">
+            <table>
+              <thead><tr><th>Nom</th><th>Identifiant</th><th>Rôle</th><th>Date</th><th>Actions</th></tr></thead>
+              <tbody>
+                {profiles.map((p) => {
+                  const isEditing = editingId === p.id;
+                  const isCurrent = p.id === currentUserId;
+                  return (
+                    <tr key={p.id}>
+                      <td>{isEditing ? <input className="table-input" value={editForm.display_name} onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })} /> : (p.display_name || '—')}</td>
+                      <td>{isEditing ? <input className="table-input" value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} /> : (p.username || '—')}</td>
+                      <td>{p.role}{isCurrent ? <span className="current-badge">Compte connecté</span> : null}</td>
+                      <td>{formatDate(p.created_at)}</td>
+                      <td>
+                        {isEditing ? (
+                          <div className="account-actions edit-mode">
+                            <input className="password-small" type="password" value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} placeholder="Nouveau mot de passe facultatif" minLength={6} />
+                            <button className="edit" onClick={() => saveAccount(p.id)} disabled={editLoading}><Save size={16} /> Enregistrer</button>
+                            <button onClick={() => { setEditingId(null); setEditForm({ display_name: '', username: '', password: '' }); }}><X size={16} /> Annuler</button>
+                          </div>
+                        ) : (
+                          <div className="account-actions">
+                            <button className="edit" onClick={() => startEdit(p)}><Edit3 size={16} /> Modifier</button>
+                            <button className="delete" onClick={() => deleteAccount(p)} disabled={editLoading || isCurrent || profiles.length <= 1}><Trash2 size={16} /> Supprimer</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="muted-help">Pour la sécurité, le dernier compte admin ne peut pas être supprimé. Le compte actuellement connecté doit être modifié depuis un autre compte admin pour être supprimé.</p>
+      </section>
+    </div>
   );
 }
 
