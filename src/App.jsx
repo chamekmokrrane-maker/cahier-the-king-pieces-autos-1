@@ -584,7 +584,7 @@ export default function App() {
   }), [demandes, devis, factures]);
 
   const isAdmin = offlineMode || profile?.role === 'admin';
-  const permissions = normalisePermissions(profile?.permissions, profile?.role || 'admin');
+  const permissions = normalisePermissions(profile?.permissions, profile?.role || 'salarie');
   const can = (feature) => isAdmin || permissions[feature] === true;
 
   useEffect(() => {
@@ -664,7 +664,7 @@ function Splash() {
 function LoginPage({ onMessage, message }) {
   const [mode, setMode] = useState('login');
   const [loading, setLoading] = useState(false);
-  const [form, setForm] = useState({ display_name: 'Mokrane', username: 'mokrane', password: '' });
+  const [form, setForm] = useState({ display_name: '', username: '', password: '' });
 
   async function submit(e) {
     e.preventDefault();
