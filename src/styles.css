@@ -404,3 +404,5 @@ body { background: #eef2f7; }
   .archive-toolbar { grid-template-columns: 1fr; }
   .permissions-grid { grid-template-columns: 1fr; }
 }
+
+.splash small{display:block;margin-top:8px;color:#64748b;font-weight:700;max-width:360px;text-align:center;line-height:1.45}

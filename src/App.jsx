@@ -54,14 +54,27 @@ function uid(prefix = 'id') {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+function dayIsoInParis(value = new Date()) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return String(value || '').slice(0, 10);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Paris',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value || '00';
+  return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
+function todayIso() {
+  return dayIsoInParis(new Date());
+}
 
 function itemDay(value) {
-  const raw = value?.created_at || value?.date_facture || value?.updated_at || todayIso();
-  try { return new Date(raw).toISOString().slice(0, 10); } catch { return String(raw).slice(0, 10); }
+  const raw = value?.created_at || value?.date || value?.date_facture || value?.updated_at || todayIso();
+  return dayIsoInParis(raw);
 }
 
 function isTodayItem(value) {
@@ -102,7 +115,9 @@ const FEATURE_LABELS = {
 
 function formatDate(value) {
   if (!value) return '';
-  try { return new Date(value).toLocaleDateString('fr-FR'); } catch { return value; }
+  try {
+    return new Date(value).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' });
+  } catch { return value; }
 }
 
 function money(value) {
@@ -271,6 +286,12 @@ export default function App() {
   const [selectedFacture, setSelectedFacture] = useState(null);
   const [message, setMessage] = useState('');
   const [offlineMode, setOfflineMode] = useState(!isSupabaseConfigured);
+  const [currentDay, setCurrentDay] = useState(todayIso());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentDay(todayIso()), 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -288,8 +309,11 @@ export default function App() {
       }
       const { data } = await supabase.auth.getSession();
       if (!mounted) return;
-      setSession(data.session || null);
-      setLoading(false);
+      const currentSession = data.session || null;
+      setSession(currentSession);
+      // Si une session existe, on garde l'écran de chargement jusqu'à
+      // la fin du chargement Supabase. Cela évite l'affichage à zéro.
+      if (!currentSession) setLoading(false);
     }
     init();
     if (isSupabaseConfigured && supabase) {
@@ -581,7 +605,7 @@ export default function App() {
     devisJour: devis.filter((d) => isTodayItem(d)).length,
     factures: factures.length,
     totalDevis: devis.reduce((sum, d) => sum + Number(d.totals?.total_ttc || totalsFromLines(d.lignes).total_ttc), 0),
-  }), [demandes, devis, factures]);
+  }), [demandes, devis, factures, currentDay]);
 
   const isAdmin = offlineMode || profile?.role === 'admin';
   const permissions = normalisePermissions(profile?.permissions, profile?.role || 'salarie');
@@ -658,7 +682,7 @@ export default function App() {
 }
 
 function Splash() {
-  return <div className="splash"><img src={logo} alt="Logo" /><h1>Cahier THE KING PIECES AUTOS</h1><p>Chargement...</p></div>;
+  return <div className="splash"><img src={logo} alt="Logo" /><h1>Cahier THE KING PIECES AUTOS</h1><p>Chargement des données Supabase...</p><small>Le cahier s’ouvre dès que les demandes, devis et factures sont synchronisés.</small></div>;
 }
 
 function LoginPage({ onMessage, message }) {

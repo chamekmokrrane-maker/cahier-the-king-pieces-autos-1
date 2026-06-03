@@ -46,3 +46,7 @@ Réglages :
 Build Command: npm install && npm run build
 Publish Directory: dist
 ```
+
+## V13
+- Correction du chargement : l'interface reste sur “Chargement des données Supabase” jusqu'à la fin de la synchronisation, pour éviter l'affichage à zéro après actualisation.
+- Correction des archives journalières : la date du jour est calculée en heure française (Europe/Paris), donc après minuit les demandes et devis de la veille passent dans Archives.
