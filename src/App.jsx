@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Archive,
+  CalendarDays,
+  FolderOpen,
+  LockKeyhole,
   ArrowLeft,
   Check,
   ClipboardList,
@@ -54,6 +57,48 @@ function uid(prefix = 'id') {
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
+
+
+function itemDay(value) {
+  const raw = value?.created_at || value?.date_facture || value?.updated_at || todayIso();
+  try { return new Date(raw).toISOString().slice(0, 10); } catch { return String(raw).slice(0, 10); }
+}
+
+function isTodayItem(value) {
+  return itemDay(value) === todayIso();
+}
+
+function formatDayTitle(day) {
+  if (!day) return 'Sans date';
+  return day === todayIso() ? `Aujourd’hui - ${formatDate(day)}` : formatDate(day);
+}
+
+function groupByDay(items) {
+  const groups = {};
+  (items || []).forEach((item) => {
+    const day = itemDay(item);
+    if (!groups[day]) groups[day] = [];
+    groups[day].push(item);
+  });
+  return Object.entries(groups).sort(([a], [b]) => b.localeCompare(a));
+}
+
+function defaultPermissions(role = 'salarie') {
+  if (role === 'admin') return { demandes: true, devis: true, factures: true, archives: true, comptes: true };
+  return { demandes: true, devis: false, factures: false, archives: false, comptes: false };
+}
+
+function normalisePermissions(value, role = 'salarie') {
+  return { ...defaultPermissions(role), ...(value || {}) };
+}
+
+const FEATURE_LABELS = {
+  demandes: 'Demandes clients',
+  devis: 'Devis',
+  factures: 'Factures clients',
+  archives: 'Archives journalières',
+  comptes: 'Gestion des comptes',
+};
 
 function formatDate(value) {
   if (!value) return '';
@@ -531,10 +576,27 @@ export default function App() {
   const stats = useMemo(() => ({
     attente: demandes.filter((d) => d.statut === 'En attente').length,
     demandes: demandes.length,
+    demandesJour: demandes.filter((d) => isTodayItem(d) && d.statut !== 'En attente').length,
     devis: devis.length,
+    devisJour: devis.filter((d) => isTodayItem(d)).length,
     factures: factures.length,
     totalDevis: devis.reduce((sum, d) => sum + Number(d.totals?.total_ttc || totalsFromLines(d.lignes).total_ttc), 0),
   }), [demandes, devis, factures]);
+
+  const isAdmin = offlineMode || profile?.role === 'admin';
+  const permissions = normalisePermissions(profile?.permissions, profile?.role || 'admin');
+  const can = (feature) => isAdmin || permissions[feature] === true;
+
+  useEffect(() => {
+    if (loading || (!offlineMode && !profile)) return;
+    const pageFeature = {
+      attente: 'demandes', demandes: 'demandes', 'demande-edit': 'demandes',
+      devis: 'devis', 'devis-edit': 'devis',
+      factures: 'factures', 'facture-edit': 'factures',
+      archives: 'archives', comptes: 'comptes',
+    }[page];
+    if (pageFeature && !can(pageFeature)) setPage('dashboard');
+  }, [page, profile?.role, profile?.permissions, offlineMode, loading]);
 
   if (loading) return <Splash />;
   if (!offlineMode && !session) return <LoginPage onMessage={setMessage} message={message} />;
@@ -548,15 +610,16 @@ export default function App() {
         </div>
         <nav className="nav-list">
           <NavButton icon={<LayoutDashboard />} label="Accueil" active={page === 'dashboard'} onClick={() => setPage('dashboard')} />
-          <NavButton icon={<Plus />} label="Nouvelle demande" active={page === 'demande-edit' && !selectedDemande?.id} onClick={() => { setSelectedDemande(createEmptyDemande()); setPage('demande-edit'); }} />
-          <NavButton icon={<ClipboardList />} label="En attente" active={page === 'attente'} onClick={() => setPage('attente')} badge={stats.attente} />
-          <NavButton icon={<ClipboardList />} label="Cahier" active={page === 'demandes'} onClick={() => setPage('demandes')} badge={demandes.length} />
-          <NavButton icon={<FileText />} label="Devis" active={page === 'devis'} onClick={() => setPage('devis')} badge={devis.length} />
-          <NavButton icon={<Archive />} label="Factures" active={page === 'factures'} onClick={() => setPage('factures')} badge={factures.length} />
-          <NavButton icon={<Users />} label="Comptes admin" active={page === 'comptes'} onClick={() => setPage('comptes')} />
+          {can('demandes') && <NavButton icon={<Plus />} label="Nouvelle demande" active={page === 'demande-edit' && !selectedDemande?.id} onClick={() => { setSelectedDemande(createEmptyDemande()); setPage('demande-edit'); }} />}
+          {can('demandes') && <NavButton icon={<ClipboardList />} label="En attente" active={page === 'attente'} onClick={() => setPage('attente')} badge={stats.attente} />}
+          {can('demandes') && <NavButton icon={<ClipboardList />} label="Cahier du jour" active={page === 'demandes'} onClick={() => setPage('demandes')} badge={stats.demandesJour} />}
+          {can('devis') && <NavButton icon={<FileText />} label="Devis du jour" active={page === 'devis'} onClick={() => setPage('devis')} badge={stats.devisJour} />}
+          {can('factures') && <NavButton icon={<Archive />} label="Factures" active={page === 'factures'} onClick={() => setPage('factures')} badge={factures.length} />}
+          {can('archives') && <NavButton icon={<FolderOpen />} label="Archives" active={page === 'archives'} onClick={() => setPage('archives')} />}
+          {can('comptes') && <NavButton icon={<Users />} label="Comptes" active={page === 'comptes'} onClick={() => setPage('comptes')} />}
         </nav>
         <div className="sidebar-footer">
-          <div className="user-pill"><Shield size={18} /><div><b>{offlineMode ? 'Mode local' : profile?.display_name || 'Admin'}</b><span>{offlineMode ? 'Supabase non configuré' : cleanUsername(profile?.username || 'admin')}</span></div></div>
+          <div className="user-pill"><Shield size={18} /><div><b>{offlineMode ? 'Mode local' : profile?.display_name || 'Utilisateur'}</b><span>{offlineMode ? 'Supabase non configuré' : `${cleanUsername(profile?.username || 'user')} · ${profile?.role === 'admin' ? 'Admin' : 'Salarié'}`}</span></div></div>
           <button className="ghost-button logout" onClick={signOut}><LogOut size={18} /> Quitter</button>
         </div>
       </aside>
@@ -573,15 +636,17 @@ export default function App() {
             onOpenDevis={() => setPage('devis')}
             onOpenFactures={() => setPage('factures')}
             onNewFacture={() => { setSelectedFacture(createEmptyFacture()); setPage('facture-edit'); }}
+            can={can}
           />
         )}
 
-        {page === 'attente' && <AttenteList demandes={demandes} onNew={() => { setSelectedDemande(createEmptyDemande()); setPage('demande-edit'); }} onEdit={(d) => { setSelectedDemande(d); setPage('demande-edit'); }} onResume={resumeDemande} onDelete={deleteDemande} onTransform={transformDemandeToDevis} />}
-        {page === 'demandes' && <DemandesList demandes={demandes} onNew={() => { setSelectedDemande(createEmptyDemande()); setPage('demande-edit'); }} onEdit={(d) => { setSelectedDemande(d); setPage('demande-edit'); }} onDelete={deleteDemande} onTransform={transformDemandeToDevis} />}
-        {page === 'demande-edit' && <DemandeEditor initial={selectedDemande || createEmptyDemande()} onSave={saveDemande} onBack={() => setPage('demandes')} onGoAttente={() => setPage('attente')} onDelete={deleteDemande} onTransform={transformDemandeToDevis} />}
+        {page === 'archives' && can('archives') && <ArchivesPage demandes={demandes} devis={devis} onEditDemande={(d) => { setSelectedDemande(d); setPage('demande-edit'); }} onDeleteDemande={deleteDemande} onTransformDemande={transformDemandeToDevis} onEditDevis={(d) => { setSelectedDevis(d); setPage('devis-edit'); }} onDeleteDevis={deleteDevis} onPrintDevis={printDevis} onWhatsappDevis={sendWhatsappDevis} onEmailDevis={sendEmailDevis} onFacture={transformDevisToFacture} can={can} />}
+        {page === 'attente' && <AttenteList canDevis={can('devis')} demandes={demandes} onNew={() => { setSelectedDemande(createEmptyDemande()); setPage('demande-edit'); }} onEdit={(d) => { setSelectedDemande(d); setPage('demande-edit'); }} onResume={resumeDemande} onDelete={deleteDemande} onTransform={transformDemandeToDevis} />}
+        {page === 'demandes' && <DemandesList canDevis={can('devis')} demandes={demandes} onNew={() => { setSelectedDemande(createEmptyDemande()); setPage('demande-edit'); }} onEdit={(d) => { setSelectedDemande(d); setPage('demande-edit'); }} onDelete={deleteDemande} onTransform={transformDemandeToDevis} />}
+        {page === 'demande-edit' && <DemandeEditor canDevis={can('devis')} initial={selectedDemande || createEmptyDemande()} onSave={saveDemande} onBack={() => setPage('demandes')} onGoAttente={() => setPage('attente')} onDelete={deleteDemande} onTransform={transformDemandeToDevis} />}
 
-        {page === 'devis' && <DevisList devis={devis} onNew={() => { setSelectedDevis(createEmptyDevis()); setPage('devis-edit'); }} onEdit={(d) => { setSelectedDevis(d); setPage('devis-edit'); }} onDelete={deleteDevis} onPrint={printDevis} onWhatsapp={sendWhatsappDevis} onEmail={sendEmailDevis} onFacture={transformDevisToFacture} />}
-        {page === 'devis-edit' && <DevisEditor initial={selectedDevis || createEmptyDevis()} onSave={saveDevis} onBack={() => setPage('devis')} onDelete={deleteDevis} onFacture={transformDevisToFacture} />}
+        {page === 'devis' && <DevisList devis={devis} onNew={() => { setSelectedDevis(createEmptyDevis()); setPage('devis-edit'); }} onEdit={(d) => { setSelectedDevis(d); setPage('devis-edit'); }} onDelete={deleteDevis} onPrint={printDevis} onWhatsapp={sendWhatsappDevis} onEmail={sendEmailDevis} onFacture={transformDevisToFacture} can={can} />}
+        {page === 'devis-edit' && <DevisEditor initial={selectedDevis || createEmptyDevis()} onSave={saveDevis} onBack={() => setPage('devis')} onDelete={deleteDevis} onFacture={transformDevisToFacture} can={can} />}
 
         {page === 'factures' && <FacturesList factures={factures} onNew={() => { setSelectedFacture(createEmptyFacture()); setPage('facture-edit'); }} onEdit={(f) => { setSelectedFacture(f); setPage('facture-edit'); }} onDelete={deleteFacture} onPrint={printFacture} />}
         {page === 'facture-edit' && <FactureEditor initial={selectedFacture || createEmptyFacture()} onSave={saveFacture} onBack={() => setPage('factures')} onDelete={deleteFacture} />}
@@ -658,7 +723,7 @@ function TopBar({ message, onClear, offlineMode, onRefresh }) {
   );
 }
 
-function Dashboard({ stats, onNew, onOpenAttente, onOpenDemandes, onOpenDevis, onOpenFactures, onNewFacture }) {
+function Dashboard({ stats, onNew, onOpenAttente, onOpenDemandes, onOpenDevis, onOpenFactures, onNewFacture, can }) {
   return (
     <div className="page-stack">
       <section className="home-pro">
@@ -667,22 +732,22 @@ function Dashboard({ stats, onNew, onOpenAttente, onOpenDemandes, onOpenDevis, o
           <h1>Bienvenue dans votre cahier professionnel.</h1>
           <p>Choisissez une action pour créer une demande, consulter le cahier, préparer un devis ou imprimer une facture.</p>
           <div className="home-actions">
-            <button className="big-action primary" onClick={onNew}><Plus size={28} /> Nouvelle demande</button>
-            <button className="big-action" onClick={onOpenAttente}><ClipboardList size={28} /> Dossiers en attente</button>
-            <button className="big-action" onClick={onOpenDemandes}><ClipboardList size={28} /> Ouvrir le cahier</button>
-            <button className="big-action" onClick={onOpenDevis}><FileText size={28} /> Ouvrir les devis</button>
-            <button className="big-action" onClick={onOpenFactures}><Archive size={28} /> Factures clients</button>
+            {can('demandes') && <button className="big-action primary" onClick={onNew}><Plus size={28} /> Nouvelle demande</button>}
+            {can('demandes') && <button className="big-action" onClick={onOpenAttente}><ClipboardList size={28} /> Dossiers en attente</button>}
+            {can('demandes') && <button className="big-action" onClick={onOpenDemandes}><ClipboardList size={28} /> Cahier du jour</button>}
+            {can('devis') && <button className="big-action" onClick={onOpenDevis}><FileText size={28} /> Devis du jour</button>}
+            {can('factures') && <button className="big-action" onClick={onOpenFactures}><Archive size={28} /> Factures clients</button>}
           </div>
         </div>
         <div className="home-logo-card"><img src={logo} alt="Logo" /><span>THE KING PIECES AUTOS</span></div>
       </section>
 
       <section className="quick-actions-panel">
-        <button onClick={onNew}><Plus size={22} /><b>Créer une demande</b><span>Téléphone, WhatsApp ou sur place</span></button>
-        <button onClick={onNewFacture}><Archive size={22} /><b>Créer une facture client</b><span>Créer, modifier et imprimer</span></button>
-        <button onClick={onOpenAttente}><ClipboardList size={22} /><b>Dossiers en attente</b><span>{stats.attente} dossier(s) à reprendre</span></button>
-        <button onClick={onOpenDemandes}><ClipboardList size={22} /><b>Cahier professionnel</b><span>{stats.demandes} dossiers enregistrés</span></button>
-        <button onClick={onOpenDevis}><FileText size={22} /><b>Devis imprimables</b><span>{stats.devis} devis créés</span></button>
+        {can('demandes') && <button onClick={onNew}><Plus size={22} /><b>Créer une demande</b><span>Téléphone, WhatsApp ou sur place</span></button>}
+        {can('factures') && <button onClick={onNewFacture}><Archive size={22} /><b>Créer une facture client</b><span>Créer, modifier et imprimer</span></button>}
+        {can('demandes') && <button onClick={onOpenAttente}><ClipboardList size={22} /><b>Dossiers en attente</b><span>{stats.attente} dossier(s) à reprendre</span></button>}
+        {can('demandes') && <button onClick={onOpenDemandes}><ClipboardList size={22} /><b>Cahier du jour</b><span>{stats.demandesJour} dossier(s) aujourd’hui</span></button>}
+        {can('devis') && <button onClick={onOpenDevis}><FileText size={22} /><b>Devis du jour</b><span>{stats.devisJour} devis aujourd’hui</span></button>}
       </section>
     </div>
   );
@@ -698,7 +763,7 @@ function statusClass(statut) {
 
 function Empty({ text }) { return <div className="empty"><Eye size={22} /><span>{text}</span></div>; }
 
-function DemandCard({ d, onEdit, onDelete, onTransform, onResume }) {
+function DemandCard({ d, onEdit, onDelete, onTransform, onResume, canDevis = true }) {
   return (
     <article className="professional-card demand-card">
       <div className="card-main">
@@ -717,31 +782,31 @@ function DemandCard({ d, onEdit, onDelete, onTransform, onResume }) {
       <div className="card-actions always-visible">
         {onResume && d.statut === 'En attente' && <button className="success" onClick={() => onResume(d)}><Check size={18} /> Reprendre le dossier</button>}
         <button className="edit" onClick={() => onEdit(d)}><Edit3 size={18} /> Modifier</button>
-        <button onClick={() => onTransform(d)}><FileText size={18} /> Faire le devis</button>
+        {canDevis && <button onClick={() => onTransform(d)}><FileText size={18} /> Faire le devis</button>}
         <button className="delete" onClick={() => onDelete(d.id)}><Trash2 size={18} /> Supprimer</button>
       </div>
     </article>
   );
 }
 
-function DemandesList({ demandes, onNew, onEdit, onDelete, onTransform }) {
+function DemandesList({ demandes, onNew, onEdit, onDelete, onTransform, canDevis = true }) {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('Tous');
   const filtered = demandes.filter((d) => {
     const haystack = `${d.numero} ${d.client_nom} ${d.client_tel} ${d.plaque} ${d.marque} ${d.modele} ${d.vin} ${d.salarie_nom}`.toLowerCase();
-    return haystack.includes(search.toLowerCase()) && (status === 'Tous' || d.statut === status);
+    return isTodayItem(d) && d.statut !== 'En attente' && haystack.includes(search.toLowerCase()) && (status === 'Tous' || d.statut === status);
   });
   return (
     <div className="page-stack">
-      <div className="section-title"><div><p className="eyebrow dark">Cahier professionnel</p><h1>Demandes clients</h1><p>Chaque dossier est affiché avec les actions visibles : modifier, faire le devis ou supprimer.</p></div><button className="primary-button big" onClick={onNew}><Plus size={18} /> Nouvelle demande</button></div>
+      <div className="section-title"><div><p className="eyebrow dark">Cahier professionnel</p><h1>Demandes clients du jour</h1><p>Cette page affiche uniquement les demandes du jour. Les anciens jours restent disponibles dans Archives.</p></div><button className="primary-button big" onClick={onNew}><Plus size={18} /> Nouvelle demande</button></div>
       <div className="filters-card"><label className="search-input"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Recherche plaque, client, téléphone, VIN, salarié..." /></label><select value={status} onChange={(e) => setStatus(e.target.value)}><option>Tous</option><option>En attente</option><option>Traité</option><option>Envoyé en devis</option><option>Annulé</option></select></div>
-      {filtered.length === 0 ? <Empty text="Aucune demande trouvée." /> : <section className="cards-list">{filtered.map((d) => <DemandCard key={d.id} d={d} onEdit={onEdit} onDelete={onDelete} onTransform={onTransform} />)}</section>}
+      {filtered.length === 0 ? <Empty text="Aucune demande du jour trouvée. Les anciens dossiers sont dans Archives." /> : <section className="cards-list">{filtered.map((d) => <DemandCard key={d.id} d={d} onEdit={onEdit} onDelete={onDelete} onTransform={onTransform} canDevis={canDevis} />)}</section>}
     </div>
   );
 }
 
 
-function AttenteList({ demandes, onNew, onEdit, onResume, onDelete, onTransform }) {
+function AttenteList({ demandes, onNew, onEdit, onResume, onDelete, onTransform, canDevis = true }) {
   const [search, setSearch] = useState('');
   const filtered = demandes.filter((d) => {
     const haystack = `${d.numero} ${d.client_nom} ${d.client_tel} ${d.plaque} ${d.marque} ${d.modele} ${d.vin} ${d.salarie_nom}`.toLowerCase();
@@ -751,12 +816,12 @@ function AttenteList({ demandes, onNew, onEdit, onResume, onDelete, onTransform 
     <div className="page-stack">
       <div className="section-title"><div><p className="eyebrow dark">Dossiers en attente</p><h1>Demandes à reprendre</h1><p>Quand tu cliques sur “Mettre en attente”, le dossier part ici. Tu peux revenir dessus plus tard avec “Reprendre le dossier”.</p></div><button className="primary-button big" onClick={onNew}><Plus size={18} /> Nouvelle demande</button></div>
       <div className="filters-card"><label className="search-input"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Recherche plaque, client, téléphone, VIN, salarié..." /></label></div>
-      {filtered.length === 0 ? <Empty text="Aucun dossier en attente." /> : <section className="cards-list">{filtered.map((d) => <DemandCard key={d.id} d={d} onEdit={onEdit} onResume={onResume} onDelete={onDelete} onTransform={onTransform} />)}</section>}
+      {filtered.length === 0 ? <Empty text="Aucun dossier en attente." /> : <section className="cards-list">{filtered.map((d) => <DemandCard key={d.id} d={d} onEdit={onEdit} onResume={onResume} onDelete={onDelete} onTransform={onTransform} canDevis={canDevis} />)}</section>}
     </div>
   );
 }
 
-function DemandeEditor({ initial, onSave, onBack, onGoAttente, onDelete, onTransform }) {
+function DemandeEditor({ initial, onSave, onBack, onGoAttente, onDelete, onTransform, canDevis = true }) {
   const [draft, setDraft] = useState(cleanDemande(initial));
   const [saving, setSaving] = useState(false);
   function update(field, value) { setDraft((d) => ({ ...d, [field]: value })); }
@@ -778,9 +843,9 @@ function DemandeEditor({ initial, onSave, onBack, onGoAttente, onDelete, onTrans
 
   return (
     <div className="page-stack">
-      <div className="section-title"><div><p className="eyebrow dark">Dossier client</p><h1>{draft.numero || 'Nouvelle demande'}</h1><p>Par défaut le dossier est traité directement. Clique sur “Mettre en attente” pour le ranger dans la partie “En attente” et le reprendre plus tard.</p></div><div className="toolbar"><button className="ghost-button" onClick={onBack}><ArrowLeft size={18} /> Retour</button>{draft.statut === 'En attente' ? <button className="primary-button soft" onClick={() => update('statut', 'Traité')}><Check size={18} /> Reprendre maintenant</button> : <button className="wait-button" onClick={saveAsPending} disabled={saving}><ClipboardList size={18} /> Mettre en attente</button>}<button className="primary-button" onClick={manualSave} disabled={saving}><Save size={18} /> {saving ? 'Sauvegarde...' : 'Enregistrer'}</button><button className="ghost-button" onClick={() => onTransform(draft)}><FileText size={18} /> Faire le devis</button>{draft.id && <button className="danger-button" onClick={() => onDelete(draft.id)}><Trash2 size={18} /> Supprimer</button>}</div></div>
+      <div className="section-title"><div><p className="eyebrow dark">Dossier client</p><h1>{draft.numero || 'Nouvelle demande'}</h1><p>Par défaut le dossier est traité directement. Clique sur “Mettre en attente” pour le ranger dans la partie “En attente” et le reprendre plus tard.</p></div><div className="toolbar"><button className="ghost-button" onClick={onBack}><ArrowLeft size={18} /> Retour</button>{draft.statut === 'En attente' ? <button className="primary-button soft" onClick={() => update('statut', 'Traité')}><Check size={18} /> Reprendre maintenant</button> : <button className="wait-button" onClick={saveAsPending} disabled={saving}><ClipboardList size={18} /> Mettre en attente</button>}<button className="primary-button" onClick={manualSave} disabled={saving}><Save size={18} /> {saving ? 'Sauvegarde...' : 'Enregistrer'}</button>{canDevis && <button className="ghost-button" onClick={() => onTransform(draft)}><FileText size={18} /> Faire le devis</button>}{draft.id && <button className="danger-button" onClick={() => onDelete(draft.id)}><Trash2 size={18} /> Supprimer</button>}</div></div>
       <section className="card form-card"><h2>Informations principales</h2><div className="current-status"><span>Dossier :</span><b className={`status ${statusClass(draft.statut)}`}>{draft.statut}</b></div><div className="form-grid three"><label>Origine<select value={draft.origine} onChange={(e) => update('origine', e.target.value)}><option>Téléphone</option><option>WhatsApp</option><option>Sur place</option></select></label><label>Nom client<input value={draft.client_nom} onChange={(e) => update('client_nom', e.target.value)} placeholder="Nom du client" /></label><label>Téléphone<input value={draft.client_tel} onChange={(e) => update('client_tel', e.target.value)} placeholder="06..." /></label></div><div className="form-grid five"><label>Plaque<input value={draft.plaque} onChange={(e) => update('plaque', e.target.value.toUpperCase())} /></label><label>Marque<input value={draft.marque} onChange={(e) => update('marque', e.target.value)} /></label><label>Modèle<input value={draft.modele} onChange={(e) => update('modele', e.target.value)} /></label><label>VIN / châssis<input value={draft.vin} onChange={(e) => update('vin', e.target.value.toUpperCase())} /></label><label>Salarié<input value={draft.salarie_nom} onChange={(e) => update('salarie_nom', e.target.value)} /></label></div></section>
-      <section className="card form-card"><div className="proposal-header"><div><h2>Pièces demandées</h2><p>Ajoute une ou plusieurs propositions si tu as plusieurs prix ou disponibilités.</p></div><button className="ghost-button" onClick={addProposition}><Plus size={18} /> Ajouter une proposition</button></div>{draft.propositions.map((prop, pIndex) => <div className="proposal-card" key={prop.id}><div className="proposal-title"><input value={prop.titre} onChange={(e) => updateProposition(prop.id, { titre: e.target.value })} /><div><b>{money(totalProposition(prop))}</b>{draft.propositions.length > 1 && <button className="icon-danger" onClick={() => removeProposition(prop.id)}><Trash2 size={16} /></button>}</div></div>{prop.pieces.map((piece, index) => <PieceRow key={piece.id} index={index + 1} piece={piece} onChange={(patch) => updatePiece(prop.id, piece.id, patch)} onRemove={() => removePiece(prop.id, piece.id)} canRemove={prop.pieces.length > 1} />)}<div className="proposal-footer"><button className="ghost-button" onClick={() => addPiece(prop.id)}><Plus size={18} /> Ajouter une pièce</button><button className="primary-button soft" onClick={() => onTransform(draft, prop.id)}><FileText size={18} /> Transformer cette proposition en devis</button></div></div>)}</section>
+      <section className="card form-card"><div className="proposal-header"><div><h2>Pièces demandées</h2><p>Ajoute une ou plusieurs propositions si tu as plusieurs prix ou disponibilités.</p></div><button className="ghost-button" onClick={addProposition}><Plus size={18} /> Ajouter une proposition</button></div>{draft.propositions.map((prop, pIndex) => <div className="proposal-card" key={prop.id}><div className="proposal-title"><input value={prop.titre} onChange={(e) => updateProposition(prop.id, { titre: e.target.value })} /><div><b>{money(totalProposition(prop))}</b>{draft.propositions.length > 1 && <button className="icon-danger" onClick={() => removeProposition(prop.id)}><Trash2 size={16} /></button>}</div></div>{prop.pieces.map((piece, index) => <PieceRow key={piece.id} index={index + 1} piece={piece} onChange={(patch) => updatePiece(prop.id, piece.id, patch)} onRemove={() => removePiece(prop.id, piece.id)} canRemove={prop.pieces.length > 1} />)}<div className="proposal-footer"><button className="ghost-button" onClick={() => addPiece(prop.id)}><Plus size={18} /> Ajouter une pièce</button>{canDevis && <button className="primary-button soft" onClick={() => onTransform(draft, prop.id)}><FileText size={18} /> Transformer cette proposition en devis</button>}</div></div>)}</section>
       <section className="card form-card"><h2>Notes internes</h2><textarea value={draft.notes} onChange={(e) => update('notes', e.target.value)} placeholder="Note interne, rappel fournisseur, commentaire..." rows={4} /></section>
     </div>
   );
@@ -812,12 +877,12 @@ function PieceRow({ index, piece, onChange, onRemove, canRemove }) {
 
 function DevisList({ devis, onNew, onEdit, onDelete, onPrint, onWhatsapp, onEmail, onFacture }) {
   const [search, setSearch] = useState('');
-  const filtered = devis.filter((d) => `${d.numero} ${d.client_nom} ${d.client_tel} ${d.plaque} ${d.marque} ${d.modele} ${d.vin}`.toLowerCase().includes(search.toLowerCase()));
+  const filtered = devis.filter((d) => isTodayItem(d) && `${d.numero} ${d.client_nom} ${d.client_tel} ${d.plaque} ${d.marque} ${d.modele} ${d.vin}`.toLowerCase().includes(search.toLowerCase()));
   return (
     <div className="page-stack">
-      <div className="section-title"><div><p className="eyebrow dark">Devis</p><h1>Devis clients</h1><p>Les références restent internes et ne sortent pas sur l’impression client.</p></div><button className="primary-button big" onClick={onNew}><Plus size={18} /> Nouveau devis</button></div>
+      <div className="section-title"><div><p className="eyebrow dark">Devis</p><h1>Devis clients du jour</h1><p>Cette page affiche uniquement les devis du jour. Les anciens devis restent disponibles dans Archives.</p></div><button className="primary-button big" onClick={onNew}><Plus size={18} /> Nouveau devis</button></div>
       <div className="filters-card"><label className="search-input"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Recherche devis, client, plaque, téléphone..." /></label></div>
-      {filtered.length === 0 ? <Empty text="Aucun devis trouvé." /> : <section className="cards-list">{filtered.map((d) => { const totals = d.totals || totalsFromLines(d.lignes || []); return <article className="professional-card devis-card" key={d.id}><div className="card-main"><div className="card-top"><b>{d.numero || 'Devis'}</b><span className="status sent">{d.statut || 'Brouillon'}</span></div><h2>{d.client_nom || 'Client non renseigné'}</h2><div className="card-details"><span><strong>Téléphone</strong>{d.client_tel || '—'}</span><span><strong>Véhicule</strong>{d.marque || '—'} {d.modele || ''}</span><span><strong>Plaque</strong>{d.plaque || '—'}</span><span><strong>Date</strong>{formatDate(d.updated_at)}</span></div><div className="card-total"><span>Total TTC</span><b>{money(totals.total_ttc)}</b></div></div><div className="card-actions always-visible"><button className="edit" onClick={() => onEdit(d)}><Edit3 size={18} /> Modifier</button><button onClick={() => onPrint(d)}><Printer size={18} /> Imprimer</button><button onClick={() => onWhatsapp(d)}><MessageCircle size={18} /> WhatsApp</button><button onClick={() => onEmail(d)}><Mail size={18} /> Email</button><button className="success" onClick={() => onFacture(d)}><Archive size={18} /> Faire facture</button><button className="delete" onClick={() => onDelete(d.id)}><Trash2 size={18} /> Supprimer</button></div></article>; })}</section>}
+      {filtered.length === 0 ? <Empty text="Aucun devis du jour trouvé. Les anciens devis sont dans Archives." /> : <section className="cards-list">{filtered.map((d) => { const totals = d.totals || totalsFromLines(d.lignes || []); return <article className="professional-card devis-card" key={d.id}><div className="card-main"><div className="card-top"><b>{d.numero || 'Devis'}</b><span className="status sent">{d.statut || 'Brouillon'}</span></div><h2>{d.client_nom || 'Client non renseigné'}</h2><div className="card-details"><span><strong>Téléphone</strong>{d.client_tel || '—'}</span><span><strong>Véhicule</strong>{d.marque || '—'} {d.modele || ''}</span><span><strong>Plaque</strong>{d.plaque || '—'}</span><span><strong>Date</strong>{formatDate(d.updated_at)}</span></div><div className="card-total"><span>Total TTC</span><b>{money(totals.total_ttc)}</b></div></div><div className="card-actions always-visible"><button className="edit" onClick={() => onEdit(d)}><Edit3 size={18} /> Modifier</button><button onClick={() => onPrint(d)}><Printer size={18} /> Imprimer</button><button onClick={() => onWhatsapp(d)}><MessageCircle size={18} /> WhatsApp</button><button onClick={() => onEmail(d)}><Mail size={18} /> Email</button><button className="success" onClick={() => onFacture(d)}><Archive size={18} /> Faire facture</button><button className="delete" onClick={() => onDelete(d.id)}><Trash2 size={18} /> Supprimer</button></div></article>; })}</section>}
     </div>
   );
 }
@@ -866,71 +931,181 @@ function FactureEditor({ initial, onSave, onBack, onDelete }) {
   );
 }
 
+
+function ArchivesPage({ demandes, devis, onEditDemande, onDeleteDemande, onTransformDemande, onEditDevis, onDeleteDevis, onPrintDevis, onWhatsappDevis, onEmailDevis, onFacture, can }) {
+  const availableTypes = [
+    ...(can('demandes') ? [{ key: 'demandes', label: 'Demandes', items: demandes }] : []),
+    ...(can('devis') ? [{ key: 'devis', label: 'Devis', items: devis }] : []),
+  ];
+  const [type, setType] = useState(availableTypes[0]?.key || 'demandes');
+  const currentType = availableTypes.find((item) => item.key === type) || availableTypes[0] || { key: 'demandes', label: 'Demandes', items: [] };
+  const groups = groupByDay(currentType.items);
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [search, setSearch] = useState('');
+  const activeDay = selectedDay || groups[0]?.[0] || todayIso();
+  const dayItems = (currentType.items || []).filter((item) => itemDay(item) === activeDay);
+  const filtered = dayItems.filter((item) => `${item.numero} ${item.client_nom} ${item.client_tel} ${item.plaque} ${item.marque} ${item.modele} ${item.vin} ${item.salarie_nom}`.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="page-stack">
+      <div className="section-title">
+        <div>
+          <p className="eyebrow dark">Archives journalières</p>
+          <h1>Dossiers classés par jour</h1>
+          <p>Chaque journée est rangée dans un dossier. Tu peux ouvrir la date voulue, modifier un dossier ou réimprimer un devis.</p>
+        </div>
+      </div>
+
+      <section className="archive-toolbar card">
+        <div className="tabs compact-tabs">
+          {availableTypes.map((entry) => <button key={entry.key} className={currentType.key === entry.key ? 'active' : ''} onClick={() => { setType(entry.key); setSelectedDay(null); }}>{entry.label}</button>)}
+        </div>
+        <label className="search-input"><Search size={18} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Recherche dans la journée ouverte..." /></label>
+      </section>
+
+      {availableTypes.length === 0 ? <Empty text="Aucune archive accessible avec ce compte." /> : (
+        <div className="archive-layout">
+          <section className="archive-folders">
+            {groups.length === 0 ? <Empty text="Aucun dossier archivé." /> : groups.map(([day, items]) => (
+              <button key={day} className={classNames('archive-folder', activeDay === day && 'active')} onClick={() => setSelectedDay(day)}>
+                <FolderOpen size={26} />
+                <span><b>{formatDayTitle(day)}</b><small>{items.length} élément(s)</small></span>
+              </button>
+            ))}
+          </section>
+
+          <section className="archive-content">
+            <div className="archive-day-title"><CalendarDays size={22} /><div><b>{formatDayTitle(activeDay)}</b><span>{filtered.length} élément(s) affiché(s)</span></div></div>
+            {filtered.length === 0 ? <Empty text="Aucun élément dans ce dossier." /> : (
+              <div className="cards-list">
+                {currentType.key === 'demandes' && filtered.map((d) => <DemandCard key={d.id} d={d} onEdit={onEditDemande} onDelete={onDeleteDemande} onTransform={onTransformDemande} canDevis={can('devis')} />)}
+                {currentType.key === 'devis' && filtered.map((d) => {
+                  const totals = d.totals || totalsFromLines(d.lignes || []);
+                  return (
+                    <article className="professional-card devis-card" key={d.id}>
+                      <div className="card-main">
+                        <div className="card-top"><b>{d.numero || 'Devis'}</b><span className="status sent">{d.statut || 'Brouillon'}</span></div>
+                        <h2>{d.client_nom || 'Client non renseigné'}</h2>
+                        <div className="card-details"><span><strong>Téléphone</strong>{d.client_tel || '—'}</span><span><strong>Véhicule</strong>{d.marque || '—'} {d.modele || ''}</span><span><strong>Plaque</strong>{d.plaque || '—'}</span><span><strong>Date</strong>{formatDate(d.created_at || d.updated_at)}</span></div>
+                        <div className="card-total"><span>Total TTC</span><b>{money(totals.total_ttc)}</b></div>
+                      </div>
+                      <div className="card-actions always-visible">
+                        <button className="edit" onClick={() => onEditDevis(d)}><Edit3 size={18} /> Modifier</button>
+                        <button onClick={() => onPrintDevis(d)}><Printer size={18} /> Imprimer</button>
+                        <button onClick={() => onWhatsappDevis(d)}><MessageCircle size={18} /> WhatsApp</button>
+                        <button onClick={() => onEmailDevis(d)}><Mail size={18} /> Email</button>
+                        {can('factures') && <button className="success" onClick={() => onFacture(d)}><Archive size={18} /> Faire facture</button>}
+                        <button className="delete" onClick={() => onDeleteDevis(d.id)}><Trash2 size={18} /> Supprimer</button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PermissionBoxes({ value, onChange, role }) {
+  const permissions = normalisePermissions(value, role);
+  if (role === 'admin') {
+    return <div className="permission-note"><Shield size={18} /> Un compte admin a automatiquement accès à tout le logiciel.</div>;
+  }
+  return (
+    <div className="permissions-grid">
+      {Object.entries(FEATURE_LABELS).filter(([key]) => key !== 'comptes').map(([key, label]) => (
+        <label className="permission-check" key={key}>
+          <input type="checkbox" checked={permissions[key] === true} onChange={(e) => onChange({ ...permissions, [key]: e.target.checked, comptes: false })} />
+          <span>{label}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function AccountsPage({ profiles, offlineMode, currentUserId, onReload, onMessage }) {
-  const [form, setForm] = useState({ display_name: '', username: '', password: '' });
+  const [form, setForm] = useState({ display_name: '', username: '', password: '', role: 'salarie', permissions: defaultPermissions('salarie') });
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ display_name: '', username: '', password: '' });
+  const [editForm, setEditForm] = useState({ display_name: '', username: '', password: '', role: 'salarie', permissions: defaultPermissions('salarie') });
   const [loading, setLoading] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
 
+  function updateRole(role) {
+    setForm((f) => ({ ...f, role, permissions: defaultPermissions(role) }));
+  }
+
+  function updateEditRole(role) {
+    setEditForm((f) => ({ ...f, role, permissions: role === 'admin' ? defaultPermissions('admin') : normalisePermissions(f.permissions, 'salarie') }));
+  }
+
   async function createAccount(e) {
     e.preventDefault();
-    if (offlineMode) { onMessage('Les comptes admin nécessitent Supabase. Configure .env puis relance le site.'); return; }
+    if (offlineMode) { onMessage('La création des comptes nécessite Supabase. Configure .env puis relance le site.'); return; }
     setLoading(true);
     try {
+      const role = form.role === 'admin' ? 'admin' : 'salarie';
+      const permissions = normalisePermissions(form.permissions, role);
       const client = createNoPersistSupabaseClient();
       const { error } = await client.auth.signUp({
         email: usernameToEmail(form.username),
         password: form.password,
-        options: { data: { username: cleanUsername(form.username), display_name: form.display_name, role: 'admin' } },
+        options: { data: { username: cleanUsername(form.username), display_name: form.display_name, role, permissions } },
       });
       if (error) throw error;
-      setForm({ display_name: '', username: '', password: '' });
-      onMessage('Compte admin créé.');
+      setForm({ display_name: '', username: '', password: '', role: 'salarie', permissions: defaultPermissions('salarie') });
+      onMessage(role === 'admin' ? 'Compte admin créé.' : 'Compte salarié créé.');
       await onReload();
     } catch (error) { onMessage(`Erreur création compte : ${error.message}`); }
     finally { setLoading(false); }
   }
 
-  function startEdit(profile) {
-    setEditingId(profile.id);
-    setEditForm({ display_name: profile.display_name || '', username: profile.username || '', password: '' });
+  function startEdit(profileItem) {
+    const role = profileItem.role === 'admin' ? 'admin' : 'salarie';
+    setEditingId(profileItem.id);
+    setEditForm({ display_name: profileItem.display_name || '', username: profileItem.username || '', password: '', role, permissions: normalisePermissions(profileItem.permissions, role) });
   }
 
   async function saveAccount(profileId) {
     if (offlineMode) { onMessage('La modification des comptes nécessite Supabase.'); return; }
     setEditLoading(true);
     try {
+      const role = editForm.role === 'admin' ? 'admin' : 'salarie';
       const payload = {
         target_id: profileId,
         new_username: editForm.username,
         new_display_name: editForm.display_name,
+        new_role: role,
+        new_permissions: normalisePermissions(editForm.permissions, role),
         new_password: editForm.password || null,
       };
-      const { error } = await supabase.rpc('update_admin_account', payload);
+      const { error } = await supabase.rpc('update_user_account', payload);
       if (error) throw error;
       setEditingId(null);
-      setEditForm({ display_name: '', username: '', password: '' });
-      onMessage('Compte admin modifié.');
+      setEditForm({ display_name: '', username: '', password: '', role: 'salarie', permissions: defaultPermissions('salarie') });
+      onMessage('Compte modifié.');
       await onReload();
     } catch (error) {
-      onMessage(`Erreur modification compte : ${error.message}. Si tu viens d’installer cette version, colle le nouveau SQL V10 dans Supabase.`);
+      onMessage(`Erreur modification compte : ${error.message}. Si tu viens d’installer cette version, colle le nouveau SQL V11 dans Supabase.`);
     } finally { setEditLoading(false); }
   }
 
   async function deleteAccount(profileItem) {
     if (offlineMode) { onMessage('La suppression des comptes nécessite Supabase.'); return; }
     if (profileItem.id === currentUserId) { onMessage('Tu ne peux pas supprimer le compte actuellement connecté.'); return; }
-    if (profiles.length <= 1) { onMessage('Impossible de supprimer le dernier compte admin.'); return; }
-    if (!window.confirm(`Supprimer le compte admin ${profileItem.display_name || profileItem.username} ?`)) return;
+    const adminCount = profiles.filter((p) => p.role === 'admin').length;
+    if (profileItem.role === 'admin' && adminCount <= 1) { onMessage('Impossible de supprimer le dernier compte admin.'); return; }
+    if (!window.confirm(`Supprimer le compte ${profileItem.role === 'admin' ? 'admin' : 'salarié'} ${profileItem.display_name || profileItem.username} ?`)) return;
     setEditLoading(true);
     try {
-      const { error } = await supabase.rpc('delete_admin_account', { target_id: profileItem.id });
+      const { error } = await supabase.rpc('delete_user_account', { target_id: profileItem.id });
       if (error) throw error;
-      onMessage('Compte admin supprimé.');
+      onMessage('Compte supprimé.');
       await onReload();
     } catch (error) {
-      onMessage(`Erreur suppression compte : ${error.message}. Si tu viens d’installer cette version, colle le nouveau SQL V10 dans Supabase.`);
+      onMessage(`Erreur suppression compte : ${error.message}. Si tu viens d’installer cette version, colle le nouveau SQL V11 dans Supabase.`);
     } finally { setEditLoading(false); }
   }
 
@@ -939,48 +1114,55 @@ function AccountsPage({ profiles, offlineMode, currentUserId, onReload, onMessag
       <div className="section-title">
         <div>
           <p className="eyebrow dark">Administration</p>
-          <h1>Comptes admin</h1>
-          <p>Crée, modifie ou supprime les comptes administrateur du logiciel.</p>
+          <h1>Comptes et accès</h1>
+          <p>Crée des comptes administrateur ou salarié, puis choisis les fonctionnalités visibles pour chaque salarié.</p>
         </div>
       </div>
 
       <section className="card form-card">
-        <h2>Créer un compte admin</h2>
-        <form className="form-grid four" onSubmit={createAccount}>
-          <label>Nom affiché<input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required placeholder="Ex : Mokrane" /></label>
-          <label>Identifiant<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required placeholder="Ex : mokrane" /></label>
-          <label>Mot de passe<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={6} /></label>
-          <button className="primary-button submit-align" disabled={loading}>{loading ? 'Création...' : 'Créer'}</button>
+        <h2>Créer un compte</h2>
+        <form className="account-form" onSubmit={createAccount}>
+          <div className="form-grid four">
+            <label>Nom affiché<input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required placeholder="Ex : Lamine" /></label>
+            <label>Identifiant<input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required placeholder="Ex : lamine" /></label>
+            <label>Mot de passe<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required minLength={6} /></label>
+            <label>Type de compte<select value={form.role} onChange={(e) => updateRole(e.target.value)}><option value="admin">Admin</option><option value="salarie">Salarié</option></select></label>
+          </div>
+          <PermissionBoxes role={form.role} value={form.permissions} onChange={(permissions) => setForm({ ...form, permissions })} />
+          <button className="primary-button submit-align" disabled={loading}>{loading ? 'Création...' : 'Créer le compte'}</button>
         </form>
       </section>
 
       <section className="card">
-        <h2>Admins existants</h2>
+        <h2>Comptes existants</h2>
         {profiles.length === 0 ? <Empty text="Aucun compte affiché." /> : (
           <div className="table-card accounts-table">
             <table>
-              <thead><tr><th>Nom</th><th>Identifiant</th><th>Rôle</th><th>Date</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Nom</th><th>Identifiant</th><th>Type</th><th>Accès salarié</th><th>Date</th><th>Actions</th></tr></thead>
               <tbody>
                 {profiles.map((p) => {
                   const isEditing = editingId === p.id;
                   const isCurrent = p.id === currentUserId;
+                  const role = p.role === 'admin' ? 'admin' : 'salarie';
+                  const perms = normalisePermissions(p.permissions, role);
                   return (
                     <tr key={p.id}>
                       <td>{isEditing ? <input className="table-input" value={editForm.display_name} onChange={(e) => setEditForm({ ...editForm, display_name: e.target.value })} /> : (p.display_name || '—')}</td>
                       <td>{isEditing ? <input className="table-input" value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} /> : (p.username || '—')}</td>
-                      <td>{p.role}{isCurrent ? <span className="current-badge">Compte connecté</span> : null}</td>
+                      <td>{isEditing ? <select className="table-input" value={editForm.role} onChange={(e) => updateEditRole(e.target.value)}><option value="admin">Admin</option><option value="salarie">Salarié</option></select> : <>{role === 'admin' ? 'Admin' : 'Salarié'}{isCurrent ? <span className="current-badge">Compte connecté</span> : null}</>}</td>
+                      <td>{isEditing ? <PermissionBoxes role={editForm.role} value={editForm.permissions} onChange={(permissions) => setEditForm({ ...editForm, permissions })} /> : role === 'admin' ? <span className="permission-note mini"><Shield size={14} /> Tous les accès</span> : <div className="permission-tags">{Object.entries(FEATURE_LABELS).filter(([key]) => key !== 'comptes' && perms[key]).map(([key, label]) => <span key={key}>{label}</span>)}</div>}</td>
                       <td>{formatDate(p.created_at)}</td>
                       <td>
                         {isEditing ? (
                           <div className="account-actions edit-mode">
                             <input className="password-small" type="password" value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} placeholder="Nouveau mot de passe facultatif" minLength={6} />
                             <button className="edit" onClick={() => saveAccount(p.id)} disabled={editLoading}><Save size={16} /> Enregistrer</button>
-                            <button onClick={() => { setEditingId(null); setEditForm({ display_name: '', username: '', password: '' }); }}><X size={16} /> Annuler</button>
+                            <button onClick={() => { setEditingId(null); setEditForm({ display_name: '', username: '', password: '', role: 'salarie', permissions: defaultPermissions('salarie') }); }}><X size={16} /> Annuler</button>
                           </div>
                         ) : (
                           <div className="account-actions">
                             <button className="edit" onClick={() => startEdit(p)}><Edit3 size={16} /> Modifier</button>
-                            <button className="delete" onClick={() => deleteAccount(p)} disabled={editLoading || isCurrent || profiles.length <= 1}><Trash2 size={16} /> Supprimer</button>
+                            <button className="delete" onClick={() => deleteAccount(p)} disabled={editLoading || isCurrent || (role === 'admin' && profiles.filter((x) => x.role === 'admin').length <= 1)}><Trash2 size={16} /> Supprimer</button>
                           </div>
                         )}
                       </td>
@@ -991,7 +1173,7 @@ function AccountsPage({ profiles, offlineMode, currentUserId, onReload, onMessag
             </table>
           </div>
         )}
-        <p className="muted-help">Pour la sécurité, le dernier compte admin ne peut pas être supprimé. Le compte actuellement connecté doit être modifié depuis un autre compte admin pour être supprimé.</p>
+        <p className="muted-help">Un salarié ne voit que les boutons et les pages autorisées. Le dernier compte admin ne peut pas être supprimé.</p>
       </section>
     </div>
   );

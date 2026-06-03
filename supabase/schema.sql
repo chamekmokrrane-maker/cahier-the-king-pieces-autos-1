@@ -1,25 +1,28 @@
 -- =========================================================
--- CAHIER THE KING PIECES AUTOS - BASE SUPABASE V10
+-- CAHIER THE KING PIECES AUTOS - BASE SUPABASE V11
 -- À coller dans Supabase > SQL Editor > New query > Run
--- Cette version ajoute aussi la partie FACTURES CLIENTS.
+-- V11 : archives journalières côté site + comptes admin/salarié avec accès limités.
 -- =========================================================
 
 create extension if not exists pgcrypto;
-
--- Nettoyage optionnel si tu repars de zéro :
--- drop table if exists public.factures cascade;
--- drop table if exists public.devis cascade;
--- drop table if exists public.demandes cascade;
--- drop table if exists public.counters cascade;
--- drop table if exists public.profiles cascade;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   username text not null unique,
   display_name text not null,
-  role text not null default 'admin' check (role in ('admin')),
+  role text not null default 'admin',
+  permissions jsonb not null default '{"demandes":true,"devis":true,"factures":true,"archives":true,"comptes":true}'::jsonb,
   created_at timestamptz not null default now()
 );
+
+alter table public.profiles add column if not exists permissions jsonb not null default '{"demandes":true,"devis":true,"factures":true,"archives":true,"comptes":true}'::jsonb;
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check check (role in ('admin','salarie'));
+update public.profiles
+set permissions = case
+  when role = 'admin' then '{"demandes":true,"devis":true,"factures":true,"archives":true,"comptes":true}'::jsonb
+  else coalesce(permissions, '{"demandes":true,"devis":false,"factures":false,"archives":false,"comptes":false}'::jsonb)
+end;
 
 create table if not exists public.counters (
   key text primary key,
@@ -108,6 +111,25 @@ create trigger set_factures_updated_at
 before update on public.factures
 for each row execute function public.set_updated_at();
 
+create or replace function public.clean_user_username(value text)
+returns text
+language sql
+immutable
+as $$
+  select lower(regexp_replace(coalesce(value, ''), '[^a-z0-9._-]', '', 'g'));
+$$;
+
+create or replace function public.default_permissions(role_value text)
+returns jsonb
+language sql
+immutable
+as $$
+  select case when role_value = 'admin'
+    then '{"demandes":true,"devis":true,"factures":true,"archives":true,"comptes":true}'::jsonb
+    else '{"demandes":true,"devis":false,"factures":false,"archives":false,"comptes":false}'::jsonb
+  end;
+$$;
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -117,17 +139,27 @@ as $$
 declare
   meta_username text;
   meta_display text;
+  meta_role text;
+  meta_permissions jsonb;
 begin
-  meta_username := lower(regexp_replace(coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)), '[^a-z0-9._-]', '', 'g'));
-  if meta_username = '' then
-    meta_username := 'admin';
-  end if;
+  meta_username := public.clean_user_username(coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1)));
+  if meta_username = '' then meta_username := 'utilisateur'; end if;
 
   meta_display := coalesce(new.raw_user_meta_data->>'display_name', meta_username);
+  meta_role := coalesce(new.raw_user_meta_data->>'role', 'salarie');
+  if meta_role not in ('admin', 'salarie') then meta_role := 'salarie'; end if;
 
-  insert into public.profiles (id, username, display_name, role)
-  values (new.id, meta_username, meta_display, 'admin')
-  on conflict (id) do nothing;
+  meta_permissions := coalesce(new.raw_user_meta_data->'permissions', public.default_permissions(meta_role));
+  if meta_role = 'admin' then meta_permissions := public.default_permissions('admin'); end if;
+  if meta_role = 'salarie' then meta_permissions := (meta_permissions || '{"comptes":false}'::jsonb); end if;
+
+  insert into public.profiles (id, username, display_name, role, permissions)
+  values (new.id, meta_username, meta_display, meta_role, meta_permissions)
+  on conflict (id) do update set
+    username = excluded.username,
+    display_name = excluded.display_name,
+    role = excluded.role,
+    permissions = excluded.permissions;
 
   return new;
 end;
@@ -145,9 +177,23 @@ stable
 security definer
 set search_path = public
 as $$
+  select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin');
+$$;
+
+create or replace function public.can_access(feature text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
   select exists (
     select 1 from public.profiles
-    where id = auth.uid() and role = 'admin'
+    where id = auth.uid()
+      and (
+        role = 'admin'
+        or coalesce((permissions ->> feature)::boolean, false) = true
+      )
   );
 $$;
 
@@ -198,58 +244,37 @@ for insert to authenticated
 with check (public.is_admin() or id = auth.uid());
 
 drop policy if exists "demandes_admin_all" on public.demandes;
-create policy "demandes_admin_all" on public.demandes
+drop policy if exists "demandes_access_all" on public.demandes;
+create policy "demandes_access_all" on public.demandes
 for all to authenticated
-using (public.is_admin())
-with check (public.is_admin());
+using (public.can_access('demandes'))
+with check (public.can_access('demandes'));
 
 drop policy if exists "devis_admin_all" on public.devis;
-create policy "devis_admin_all" on public.devis
+drop policy if exists "devis_access_all" on public.devis;
+create policy "devis_access_all" on public.devis
 for all to authenticated
-using (public.is_admin())
-with check (public.is_admin());
+using (public.can_access('devis'))
+with check (public.can_access('devis'));
 
 drop policy if exists "factures_admin_all" on public.factures;
-create policy "factures_admin_all" on public.factures
+drop policy if exists "factures_access_all" on public.factures;
+create policy "factures_access_all" on public.factures
 for all to authenticated
-using (public.is_admin())
-with check (public.is_admin());
+using (public.can_access('factures'))
+with check (public.can_access('factures'));
 
--- Pas d'accès direct aux compteurs, uniquement via la fonction next_counter.
 drop policy if exists "counters_no_direct_access" on public.counters;
 create policy "counters_no_direct_access" on public.counters
 for select to authenticated
 using (false);
 
-create index if not exists idx_demandes_updated_at on public.demandes(updated_at desc);
-create index if not exists idx_demandes_plaque on public.demandes(plaque);
-create index if not exists idx_demandes_client on public.demandes(client_nom);
-create index if not exists idx_devis_updated_at on public.devis(updated_at desc);
-create index if not exists idx_devis_numero on public.devis(numero);
-create index if not exists idx_factures_updated_at on public.factures(updated_at desc);
-create index if not exists idx_factures_numero on public.factures(numero);
-create index if not exists idx_factures_date on public.factures(date_facture desc);
-
-
-
--- =========================================================
--- V10 - Gestion des comptes admin depuis le site
--- Permet de modifier nom / identifiant / mot de passe et de supprimer un admin.
--- Le dernier compte admin et le compte connecté ne doivent pas être supprimés.
--- =========================================================
-
-create or replace function public.clean_admin_username(value text)
-returns text
-language sql
-immutable
-as $$
-  select lower(regexp_replace(coalesce(value, ''), '[^a-z0-9._-]', '', 'g'));
-$$;
-
-create or replace function public.update_admin_account(
+create or replace function public.update_user_account(
   target_id uuid,
   new_username text,
   new_display_name text,
+  new_role text,
+  new_permissions jsonb,
   new_password text default null
 )
 returns public.profiles
@@ -260,21 +285,43 @@ as $$
 declare
   cleaned_username text;
   cleaned_display text;
+  role_value text;
+  permissions_value jsonb;
   new_email text;
   updated_profile public.profiles;
+  target_role text;
+  admin_count integer;
 begin
   if not public.is_admin() then
     raise exception 'Accès refusé';
   end if;
 
-  cleaned_username := public.clean_admin_username(new_username);
-  if cleaned_username = '' then
-    raise exception 'Identifiant obligatoire';
-  end if;
+  cleaned_username := public.clean_user_username(new_username);
+  if cleaned_username = '' then raise exception 'Identifiant obligatoire'; end if;
 
   cleaned_display := nullif(trim(coalesce(new_display_name, '')), '');
-  if cleaned_display is null then
-    cleaned_display := cleaned_username;
+  if cleaned_display is null then cleaned_display := cleaned_username; end if;
+
+  role_value := coalesce(new_role, 'salarie');
+  if role_value not in ('admin', 'salarie') then raise exception 'Type de compte invalide'; end if;
+
+  select role into target_role from public.profiles where id = target_id;
+  if target_role is null then raise exception 'Compte introuvable'; end if;
+
+  if target_id = auth.uid() and role_value <> 'admin' then
+    raise exception 'Tu ne peux pas retirer ton propre accès admin';
+  end if;
+
+  if target_role = 'admin' and role_value <> 'admin' then
+    select count(*) into admin_count from public.profiles where role = 'admin';
+    if admin_count <= 1 then raise exception 'Impossible de retirer le dernier compte admin'; end if;
+  end if;
+
+  permissions_value := coalesce(new_permissions, public.default_permissions(role_value));
+  if role_value = 'admin' then
+    permissions_value := public.default_permissions('admin');
+  else
+    permissions_value := permissions_value || '{"comptes":false}'::jsonb;
   end if;
 
   new_email := cleaned_username || '@thekingpiecesautos.fr';
@@ -282,26 +329,20 @@ begin
   update public.profiles
   set username = cleaned_username,
       display_name = cleaned_display,
-      role = 'admin'
+      role = role_value,
+      permissions = permissions_value
   where id = target_id
   returning * into updated_profile;
-
-  if updated_profile.id is null then
-    raise exception 'Compte introuvable';
-  end if;
 
   update auth.users
   set email = new_email,
       raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb)
-        || jsonb_build_object('username', cleaned_username, 'display_name', cleaned_display, 'role', 'admin'),
+        || jsonb_build_object('username', cleaned_username, 'display_name', cleaned_display, 'role', role_value, 'permissions', permissions_value),
       updated_at = now()
   where id = target_id;
 
   if new_password is not null and trim(new_password) <> '' then
-    if length(new_password) < 6 then
-      raise exception 'Le mot de passe doit contenir au moins 6 caractères';
-    end if;
-
+    if length(new_password) < 6 then raise exception 'Le mot de passe doit contenir au moins 6 caractères'; end if;
     update auth.users
     set encrypted_password = crypt(new_password, gen_salt('bf')),
         updated_at = now()
@@ -312,15 +353,16 @@ begin
 end;
 $$;
 
-grant execute on function public.update_admin_account(uuid, text, text, text) to authenticated;
+grant execute on function public.update_user_account(uuid, text, text, text, jsonb, text) to authenticated;
 
-create or replace function public.delete_admin_account(target_id uuid)
+create or replace function public.delete_user_account(target_id uuid)
 returns void
 language plpgsql
 security definer
 set search_path = public, auth
 as $$
 declare
+  target_role text;
   admin_count integer;
 begin
   if not public.is_admin() then
@@ -331,16 +373,57 @@ begin
     raise exception 'Impossible de supprimer le compte actuellement connecté';
   end if;
 
-  select count(*) into admin_count from public.profiles where role = 'admin';
-  if admin_count <= 1 then
-    raise exception 'Impossible de supprimer le dernier compte admin';
+  select role into target_role from public.profiles where id = target_id;
+  if target_role is null then raise exception 'Compte introuvable'; end if;
+
+  if target_role = 'admin' then
+    select count(*) into admin_count from public.profiles where role = 'admin';
+    if admin_count <= 1 then raise exception 'Impossible de supprimer le dernier compte admin'; end if;
   end if;
 
   delete from auth.users where id = target_id;
 end;
 $$;
 
+grant execute on function public.delete_user_account(uuid) to authenticated;
+
+-- Compatibilité ancienne V10 : ces fonctions redirigent vers les nouvelles.
+create or replace function public.update_admin_account(target_id uuid, new_username text, new_display_name text, new_password text default null)
+returns public.profiles
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return public.update_user_account(target_id, new_username, new_display_name, 'admin', public.default_permissions('admin'), new_password);
+end;
+$$;
+
+grant execute on function public.update_admin_account(uuid, text, text, text) to authenticated;
+
+create or replace function public.delete_admin_account(target_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.delete_user_account(target_id);
+end;
+$$;
+
 grant execute on function public.delete_admin_account(uuid) to authenticated;
+
+create index if not exists idx_demandes_updated_at on public.demandes(updated_at desc);
+create index if not exists idx_demandes_created_at on public.demandes(created_at desc);
+create index if not exists idx_demandes_plaque on public.demandes(plaque);
+create index if not exists idx_demandes_client on public.demandes(client_nom);
+create index if not exists idx_devis_updated_at on public.devis(updated_at desc);
+create index if not exists idx_devis_created_at on public.devis(created_at desc);
+create index if not exists idx_devis_numero on public.devis(numero);
+create index if not exists idx_factures_updated_at on public.factures(updated_at desc);
+create index if not exists idx_factures_numero on public.factures(numero);
+create index if not exists idx_factures_date on public.factures(date_facture desc);
 
 -- =========================================================
 -- IMPORTANT SUPABASE AUTH
